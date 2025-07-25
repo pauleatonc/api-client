@@ -88,19 +88,19 @@ export const useAuth = () => {
   // Función para renovar el token manualmente
   const refreshToken = useCallback(async () => {
     if (keycloak && authenticated) {
-      try {
+    try {
         const refreshed = await keycloak.updateToken(5);
         if (refreshed) {
           console.log('AUTH_HOOK: Token renovado manualmente');
           setupApiInterceptors(keycloak.token);
           return keycloak.token;
-        }
+      }
         return keycloak.token;
-      } catch (error) {
+    } catch (error) {
         console.error('Error refreshing token:', error);
         setError('Error al renovar el token. Por favor, inicia sesión nuevamente.');
-        return null;
-      }
+      return null;
+    }
     }
     return null;
   }, [keycloak, authenticated]);

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import '@uppy/core/dist/style.min.css';
+import SparkMD5 from 'spark-md5';
 
 // Configuración para chunked upload manual
 const USE_MANUAL_CHUNKED = true; // Usar implementación manual en lugar de Uppy
@@ -18,7 +19,7 @@ function splitFileIntoChunks(file, chunkSize = CHUNK_SIZE) {
   
   while (start < file.size) {
     const end = Math.min(start + chunkSize, file.size);
-    const chunk = file.slice(start, end);
+    const chunk = file.slice(start, end, file.type);
     
     chunks.push({
       data: chunk,
@@ -35,87 +36,63 @@ function splitFileIntoChunks(file, chunkSize = CHUNK_SIZE) {
   return chunks;
 }
 
-// Función para finalizar la subida chunked (ensamblar chunks)
-async function finalizeChunkedUpload(uploadId, filename, totalChunks, totalSize, endpoint, token) {
-  console.log('🔧 Intentando finalizar subida chunked...');
-  
-  // Intentar diferentes enfoques para finalizar
-  const finalizeEndpoints = [
-    `${endpoint}/finalize`,  // Endpoint específico para finalizar
-    `${endpoint}`,           // Mismo endpoint con parámetro action
-  ];
-  
-  for (const finalizeEndpoint of finalizeEndpoints) {
-    try {
-      const formData = new FormData();
-      formData.append('upload_id', uploadId);
-      formData.append('filename', filename);
-      formData.append('total_chunks', totalChunks.toString());
-      formData.append('total_size', totalSize.toString());
-      
-      if (finalizeEndpoint === endpoint) {
-        formData.append('action', 'finalize');
+// Función para calcular MD5 de un chunk
+async function calculateMD5(chunk) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const spark = new SparkMD5.ArrayBuffer();
+    
+    reader.onload = (e) => {
+      try {
+        spark.append(e.target.result);
+        const hash = spark.end();
+        console.log(`MD5 calculado para chunk: ${hash}`);
+        resolve(hash);
+      } catch (error) {
+        console.error('Error calculando MD5:', error);
+        reject(error);
       }
-      
-      console.log(`🔧 Probando endpoint: ${finalizeEndpoint}`);
-      
-      const response = await fetch(finalizeEndpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
-        },
-        body: formData
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('✅ Subida finalizada exitosamente:', result);
-        return result;
-      } else {
-        console.log(`❌ Falló con ${finalizeEndpoint}: ${response.status}`);
-      }
-    } catch (error) {
-      console.log(`❌ Error con ${finalizeEndpoint}:`, error.message);
-    }
-  }
-  
-  throw new Error('No se pudo finalizar la subida con ningún método');
+    };
+    
+    reader.onerror = () => {
+      reject(new Error('Error leyendo chunk para calcular MD5'));
+    };
+    
+    reader.readAsArrayBuffer(chunk.data);
+  });
 }
 
 // Función para enviar un chunk individual
 async function uploadChunk(chunk, file, uploadId, totalChunks, endpoint, token) {
   const formData = new FormData();
   
-  // Datos del chunk - usar 'files' como campo
-  formData.append('files', chunk.data, file.name);
-  
-  // Metadatos requeridos por CGR API
+  // Datos del chunk como blob binario con nombre original
+  const chunkBlob = new Blob([chunk.data], { type: file.type });
   formData.append('upload_id', uploadId);
   formData.append('chunk_index', chunk.index.toString());
   formData.append('total_chunks', totalChunks.toString());
   formData.append('filename', file.name);
   formData.append('file_size', file.size.toString());
   formData.append('chunk_size', chunk.size.toString());
+  formData.append('content_type', file.type); // para mantener el tipo mime del archivo original
+
+  formData.append('files', chunkBlob, file.name);
   
-  // Log detallado de la petición
-  console.log('📤 Detalles de la petición:');
-  console.log('🔗 Endpoint:', endpoint);
-  console.log('🔑 Token:', token);
-  console.log('📦 Datos del chunk:', {
-    upload_id: uploadId,
-    chunk_index: chunk.index,
-    total_chunks: totalChunks,
-    filename: file.name,
-    file_size: file.size,
-    chunk_size: chunk.size
+  // Calcular MD5 del chunk
+  try {
+    const chunkHash = await calculateMD5(chunk);
+    formData.append('chunk_hash', chunkHash);
+  } catch (hashError) {
+    console.error('Error calculando hash MD5:', hashError);
+  }
+  
+  console.log(`Subiendo chunk ${chunk.index + 1}/${totalChunks} - ${(chunk.size / (1024*1024)).toFixed(2)}MB`);
+  
+  // Log de los headers enviados
+  console.log('Headers:', {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json'
   });
-  
-  console.log(
-    `📤 Enviando chunk ${chunk.index + 1}/${totalChunks} | ` +
-    `Tamaño: ${(chunk.size / (1024*1024)).toFixed(2)}MB | ` +
-    `Archivo: ${file.name}`
-  );
   
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -128,34 +105,32 @@ async function uploadChunk(chunk, file, uploadId, totalChunks, endpoint, token) 
   
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('❌ Error en la respuesta:', {
+    console.error('Error en la respuesta:', {
       status: response.status,
       statusText: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
       body: errorText
     });
     throw new Error(`Error HTTP ${response.status}: ${errorText}`);
   }
   
   const result = await response.json();
-  console.log(`✅ Chunk ${chunk.index + 1}/${totalChunks} subido exitosamente`);
-  console.log(`📋 Respuesta del chunk ${chunk.index + 1}:`, result);
+  // Log completo de la respuesta JSON del backend
+  console.log('Respuesta completa del backend:', result);
   
-  // Verificar si la API está procesando correctamente los chunks
-  if (result.archivos && result.archivos[0]) {
-    const archivo = result.archivos[0];
-    console.log(`📊 Análisis del chunk ${chunk.index + 1}:`);
-    console.log(`   - Tamaño esperado del chunk: ${chunk.size} bytes`);
-    console.log(`   - Tamaño reportado por API: ${archivo.tamaño} bytes`);
-    console.log(`   - Upload ID enviado: ${uploadId}`);
-    console.log(`   - ¿Tamaños coinciden?:`, chunk.size === archivo.tamaño);
-    
-    if (chunk.index === totalChunks - 1) {
-      console.log(`🏁 ÚLTIMO CHUNK - Análisis final:`);
-      console.log(`   - Tamaño original del archivo: ${file.size} bytes`);
-      console.log(`   - Tamaño final reportado: ${archivo.tamaño} bytes`);
-      console.log(`   - ¿Es el archivo completo?:`, archivo.tamaño === file.size);
-    }
+  // Si result.archivos está presente, logea sus campos
+  const archivo = result.archivos?.[0];
+  if (archivo) {
+    console.log('Analisis respuesta chunk:', {
+      nombre: archivo.nombre,
+      tamaño_reportado: archivo.tamaño,
+      tipo_contenido: archivo.tipo_contenido,
+      uuid: archivo.uuid,
+      tamaño_esperado: chunk.size,
+      coinciden: chunk.size === archivo.tamaño
+    });
+  } else {
+    // Si la respuesta no contiene los campos esperados
+    console.error('Respuesta inesperada del backend para el chunk:', result);
   }
   
   return result;
@@ -179,23 +154,10 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
     // Construir el endpoint completo para apifile
     const base = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
     const path = apiUploadPath.startsWith('/') ? apiUploadPath.slice(1) : apiUploadPath;
-    // Usar la URL tal como está configurada en las variables de entorno
     const uploadEndpoint = `${base}/${path}`;
     
     // Obtener el token actual para headers estáticos
     const currentToken = keycloak?.token || token;
-    
-    console.log(`🔗 Endpoint configurado: ${uploadEndpoint}`);
-    console.log(`🔑 Token disponible: ${currentToken ? 'Sí' : 'No'}`);
-    console.log(`🔑 Access Token:`, currentToken);
-    if (currentToken) {
-      try {
-        const tokenPayload = JSON.parse(atob(currentToken.split('.')[1]));
-        console.log(`🔑 Token decodificado:`, tokenPayload);
-      } catch (e) {
-        console.error('Error decodificando token:', e);
-      }
-    }
 
     return () => {
       // Cleanup si es necesario
@@ -212,34 +174,19 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         message: 'Iniciando subida por chunks...',
       });
 
+      // Imprime el tipo MIME del archivo original al inicio
+      console.log('Tipo MIME del archivo original:', file.type);
+
       // Configurar endpoint y token
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
       const apiUploadPath = import.meta.env.VITE_API_UPLOAD_PATH;
       const base = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
       const path = apiUploadPath.startsWith('/') ? apiUploadPath.slice(1) : apiUploadPath;
-      // Usar la URL tal como está configurada en las variables de entorno
       const uploadEndpoint = `${base}/${path}`;
       const currentToken = keycloak?.token || token;
 
       if (!currentToken) {
         throw new Error('No hay token disponible para la subida');
-      }
-
-      // Log detallado del token
-      console.log('🔑 Token completo:', currentToken);
-      try {
-        const [header, payload, signature] = currentToken.split('.');
-        console.log('🔑 Token Header:', JSON.parse(atob(header)));
-        console.log('🔑 Token Payload:', JSON.parse(atob(payload)));
-        console.log('🔑 Token Signature:', signature);
-        
-        // Verificar expiración
-        const tokenData = JSON.parse(atob(payload));
-        const expirationDate = new Date(tokenData.exp * 1000);
-        console.log('🔑 Token expira:', expirationDate.toLocaleString());
-        console.log('🔑 Token expirado:', new Date() > expirationDate);
-      } catch (e) {
-        console.error('Error analizando token:', e);
       }
 
       // Generar upload_id único
@@ -250,17 +197,19 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
       const chunks = splitFileIntoChunks(file, CHUNK_SIZE);
       const totalChunks = chunks.length;
       
-      console.log(`🚀 Iniciando subida chunked:`);
-      console.log(`📁 Archivo: ${file.name} (${(file.size / (1024*1024)).toFixed(2)}MB)`);
-      console.log(`🔗 Upload ID: ${uploadId}`);
-      console.log(`📦 Total chunks: ${totalChunks} de ${(CHUNK_SIZE / (1024*1024)).toFixed(2)}MB cada uno`);
+      console.log(`Iniciando subida: ${file.name} (${(file.size / (1024*1024)).toFixed(2)}MB) - ${totalChunks} chunks`);
       
       setUploadProgress({ current: 0, total: totalChunks });
 
       // Subir chunks secuencialmente
       const results = [];
+      let tipo_contenido_final = null;
+      let uuid_final = null;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
+        
+        // Validación de seguridad del upload_id
+        console.assert(uploadId === uploadIdRef.current, 'Upload ID cambió entre chunks');
         
         setUploadProgress({ current: i + 1, total: totalChunks });
         setUploadStatus({
@@ -271,24 +220,34 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         try {
           const result = await uploadChunk(chunk, file, uploadId, totalChunks, uploadEndpoint, currentToken);
           results.push(result);
+          // Guardar tipo_contenido y uuid si están presentes
+          const archivo = result.archivos?.[0];
+          if (archivo) {
+            tipo_contenido_final = archivo.tipo_contenido;
+            uuid_final = archivo.uuid;
+          }
         } catch (chunkError) {
-          console.error(`❌ Error en chunk ${i + 1}:`, chunkError.message);
+          console.error(`Error en chunk ${i + 1}:`, chunkError.message);
           
           // Si es 401, intentar renovar token una vez
           if (chunkError.message.includes('401') && onTokenRefresh && retryAttemptRef.current < 1) {
             retryAttemptRef.current += 1;
-            console.log('🔄 Renovando token...');
             
             try {
               const newToken = await onTokenRefresh();
               if (newToken) {
-                console.log('✅ Token renovado, reintentando chunk...');
                 const result = await uploadChunk(chunk, file, uploadId, totalChunks, uploadEndpoint, newToken);
                 results.push(result);
+                // Guardar tipo_contenido y uuid si están presentes
+                const archivo = result.archivos?.[0];
+                if (archivo) {
+                  tipo_contenido_final = archivo.tipo_contenido;
+                  uuid_final = archivo.uuid;
+                }
                 continue;
               }
             } catch (refreshError) {
-              console.error('❌ Error renovando token:', refreshError);
+              console.error('Error renovando token:', refreshError);
             }
           }
           
@@ -296,55 +255,29 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         }
       }
 
-      // Verificar si el último resultado tiene el tamaño correcto
-      const lastResult = results[results.length - 1];
-      let finalResult = lastResult;
-      
-      if (lastResult?.archivos?.[0]?.tamaño !== file.size) {
-        console.log('⚠️ El archivo final no tiene el tamaño correcto. Intentando finalizar...');
-        
-        setUploadStatus({
-          type: 'info',
-          message: 'Finalizando ensamblaje del archivo...',
-        });
-        
-        try {
-          finalResult = await finalizeChunkedUpload(
-            uploadId, 
-            file.name, 
-            totalChunks, 
-            file.size, 
-            uploadEndpoint, 
-            currentToken
-          );
-        } catch (finalizeError) {
-          console.log('⚠️ No se pudo finalizar automáticamente:', finalizeError.message);
-          console.log('📝 Esto podría ser normal si la API ensambla automáticamente');
-          // No lanzar error, usar el último resultado
-        }
-      } else {
-        console.log('✅ El archivo parece haberse ensamblado correctamente');
-      }
-
       // Éxito completo
       setIsUploading(false);
       setUploadCompleted(true);
       setUploadStatus({
         type: 'success',
-        message: `✅ Archivo subido completamente (${totalChunks} chunks)`,
-        details: finalResult, // Usar el resultado finalizado o el último chunk
+        message: `Archivo subido completamente (${totalChunks} chunks)`,
+        details: results[results.length - 1],
       });
 
-      console.log(`🎉 ¡Subida completada exitosamente!`);
-      console.log(`📁 Archivo: ${file.name}`);
-      console.log(`🔗 Upload ID: ${uploadId}`);
-      console.log(`📦 Chunks procesados: ${totalChunks}`);
+      console.log(`Subida completada: ${file.name}`);
+      // Log final de tipo_contenido y uuid
+      if (tipo_contenido_final || uuid_final) {
+        console.log('Archivo ensamblado:', {
+          tipo_contenido_final,
+          uuid_final
+        });
+      }
       
-      uploadIdRef.current = null;
+      uploadIdRef.current = null; 
 
     } catch (error) {
-      console.error('❌ Error en subida chunked:', error.message);
-      
+      console.error('Error en subida chunked:', error.message);
+
       setIsUploading(false);
       setUploadCompleted(true);
       setUploadStatus({
@@ -367,13 +300,12 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         uploadIdRef.current = null;
         
         const file = files[0];
-        console.log(`📄 Archivo seleccionado: ${file.name} (${(file.size / (1024*1024)).toFixed(2)}MB)`);
         
         // Usar implementación manual
         uploadFileInChunks(file);
         
       } catch (error) {
-        console.error('❌ Error al procesar archivo:', error.message);
+        console.error('Error al procesar archivo:', error.message);
         setUploadStatus({
           type: 'error',
           message: `Error al procesar el archivo: ${error.message}`,
@@ -408,8 +340,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
-    
-    console.log('🔄 Uploader reiniciado');
   };
 
   const handleFileInputClick = () => {
