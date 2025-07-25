@@ -1,0 +1,27 @@
+.clave-unica-button {
+  background-color: #0072CE;
+  border-color: #0072CE;
+  color: white;
+  padding: 10px 20px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.clave-unica-button:hover {
+  background-color: #005fa3;
+  border-color: #005fa3;
+}
+
+.clave-unica-button:active {
+  background-color: #004d82;
+  border-color: #004d82;
+}
+
+.clave-unica-button svg {
+  width: 24px;
+  height: 24px;
+} 

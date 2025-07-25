@@ -1,0 +1,17 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://10.17.1.19
+      - VITE_API_UPLOAD_PATH=/upload
+    volumes:
+      - ./src:/app/src
+    networks:
+      - frontend_net
+
+networks:
+  frontend_net: {}
