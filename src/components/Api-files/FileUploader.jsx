@@ -1,15 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import '@uppy/core/dist/style.min.css';
-import SparkMD5 from 'spark-md5';
 
 // Configuración para chunked upload manual
 const USE_MANUAL_CHUNKED = true; // Usar implementación manual en lugar de Uppy
-const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks
+const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks (coincide con el script bash)
 
-// Función para generar upload_id único compartido entre chunks
-function generateUploadId() {
-  return crypto?.randomUUID?.() || Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-}
+
 
 // Función para dividir archivo en chunks
 function splitFileIntoChunks(file, chunkSize = CHUNK_SIZE) {
@@ -36,57 +32,73 @@ function splitFileIntoChunks(file, chunkSize = CHUNK_SIZE) {
   return chunks;
 }
 
-// Función para calcular MD5 de un chunk
-async function calculateMD5(chunk) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    const spark = new SparkMD5.ArrayBuffer();
-    
-    reader.onload = (e) => {
-      try {
-        spark.append(e.target.result);
-        const hash = spark.end();
-        console.log(`MD5 calculado para chunk: ${hash}`);
-        resolve(hash);
-      } catch (error) {
-        console.error('Error calculando MD5:', error);
-        reject(error);
-      }
-    };
-    
-    reader.onerror = () => {
-      reject(new Error('Error leyendo chunk para calcular MD5'));
-    };
-    
-    reader.readAsArrayBuffer(chunk.data);
-  });
-}
+
 
 // Función para enviar un chunk individual
-async function uploadChunk(chunk, file, uploadId, totalChunks, endpoint, token) {
+async function uploadChunk(chunk, file, totalChunks, endpoint, token, clientId) {
   const formData = new FormData();
   
   // Datos del chunk como blob binario con nombre original
   const chunkBlob = new Blob([chunk.data], { type: file.type });
-  formData.append('upload_id', uploadId);
-  formData.append('chunk_index', chunk.index.toString());
-  formData.append('total_chunks', totalChunks.toString());
-  formData.append('filename', file.name);
-  formData.append('file_size', file.size.toString());
-  formData.append('chunk_size', chunk.size.toString());
-  formData.append('content_type', file.type); // para mantener el tipo mime del archivo original
-
-  formData.append('files', chunkBlob, file.name);
   
-  // Calcular MD5 del chunk
-  try {
-    const chunkHash = await calculateMD5(chunk);
-    formData.append('chunk_hash', chunkHash);
-  } catch (hashError) {
-    console.error('Error calculando hash MD5:', hashError);
+  // Parámetros según especificaciones
+  formData.append('files', chunkBlob, file.name);
+  formData.append('client_id', clientId); // único por navegador + usuario
+  formData.append('part_number', (chunk.index + 1).toString());
+  formData.append('total_parts', totalChunks.toString());
+    formData.append('original_filename', file.name);
+  
+  // El usuario se extrae automáticamente del token JWT de Keycloak en el backend
+  // Solo enviamos client_id para manejo de concurrencia
+  
+  // Parámetro crucial para que el backend detecte el último chunk
+  if (chunk.index + 1 === totalChunks) {
+    formData.append('completo', 'true');
+    // Intentar también otros nombres que el backend podría estar esperando
+    formData.append('is_last_chunk', 'true');
+    formData.append('final_chunk', 'true');
+    formData.append('last_part', 'true');
+  } else {
+    formData.append('completo', 'false');
+    formData.append('is_last_chunk', 'false');
+    formData.append('final_chunk', 'false');
+    formData.append('last_part', 'false');
+  }
+
+  console.log(`Subiendo chunk ${chunk.index + 1}/${totalChunks} - ${(chunk.size / (1024*1024)).toFixed(2)}MB`);
+  console.log(`Client ID: ${clientId}`);
+  console.log('Detalles del chunk:', {
+    part_number: chunk.index + 1,
+    total_parts: totalChunks,
+    chunk_size: chunk.size,
+    file_size: file.size,
+    is_last_chunk: chunk.index + 1 === totalChunks,
+    start_byte: chunk.start,
+    end_byte: chunk.end,
+    parametros_enviados: {
+      files: `${file.name} (${chunk.size} bytes)`,
+      client_id: clientId,
+      part_number: chunk.index + 1,
+      total_parts: totalChunks,
+      original_filename: file.name,
+      completo: chunk.index + 1 === totalChunks ? 'true' : 'false'
+    }
+  });
+  
+  // Log para el último chunk
+  if (chunk.index + 1 === totalChunks) {
+    console.log('🚨 ÚLTIMO CHUNK - completo: true, client_id:', clientId);
   }
   
-  console.log(`Subiendo chunk ${chunk.index + 1}/${totalChunks} - ${(chunk.size / (1024*1024)).toFixed(2)}MB`);
+  // DIAGNÓSTICO: Verificar todos los parámetros enviados
+  console.log('📋 TODOS LOS PARÁMETROS ENVIADOS:');
+  for (let [key, value] of formData.entries()) {
+    if (value instanceof File || value instanceof Blob) {
+      console.log(`  ${key}: [File/Blob] ${value.name || 'unnamed'} (${value.size} bytes)`);
+    } else {
+      console.log(`  ${key}: "${value}"`);
+    }
+  }
   
   // Log de los headers enviados
   console.log('Headers:', {
@@ -136,6 +148,8 @@ async function uploadChunk(chunk, file, uploadId, totalChunks, endpoint, token) 
   return result;
 }
 
+
+
 const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
   const [uploadStatus, setUploadStatus] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -144,7 +158,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
   const fileInputRef = useRef(null);
   const dropzoneRef = useRef(null);
   const retryAttemptRef = useRef(0);
-  const uploadIdRef = useRef(null);
 
   useEffect(() => {
     // Configuración para API externa (apifile) con chunked upload
@@ -177,21 +190,28 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
       // Imprime el tipo MIME del archivo original al inicio
       console.log('Tipo MIME del archivo original:', file.type);
 
-      // Configurar endpoint y token
+      // Configurar endpoint y token PRIMERO
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL;
       const apiUploadPath = import.meta.env.VITE_API_UPLOAD_PATH;
       const base = apiBaseUrl.endsWith('/') ? apiBaseUrl.slice(0, -1) : apiBaseUrl;
       const path = apiUploadPath.startsWith('/') ? apiUploadPath.slice(1) : apiUploadPath;
       const uploadEndpoint = `${base}/${path}`;
       const currentToken = keycloak?.token || token;
+      
+      // Generar client_id único: navegador + usuario + timestamp
+      // "cada navegador + nfiles uploads es el id"
+      const userAgent = navigator.userAgent.slice(-10); // últimos 10 chars del user agent
+      const sessionToken = currentToken ? currentToken.slice(-8) : 'anonymous'; // últimos 8 chars del token
+      const timestamp = Date.now();
+      const clientId = `${userAgent}_${sessionToken}_${timestamp}`.replace(/[^a-zA-Z0-9_]/g, '_');
+      
+      console.log('Client ID único:', clientId);
 
       if (!currentToken) {
         throw new Error('No hay token disponible para la subida');
       }
 
-      // Generar upload_id único
-      const uploadId = generateUploadId();
-      uploadIdRef.current = uploadId;
+
 
       // Dividir archivo en chunks
       const chunks = splitFileIntoChunks(file, CHUNK_SIZE);
@@ -208,9 +228,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         
-        // Validación de seguridad del upload_id
-        console.assert(uploadId === uploadIdRef.current, 'Upload ID cambió entre chunks');
-        
         setUploadProgress({ current: i + 1, total: totalChunks });
         setUploadStatus({
           type: 'info',
@@ -218,7 +235,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         });
 
         try {
-          const result = await uploadChunk(chunk, file, uploadId, totalChunks, uploadEndpoint, currentToken);
+          const result = await uploadChunk(chunk, file, totalChunks, uploadEndpoint, currentToken, clientId);
           results.push(result);
           // Guardar tipo_contenido y uuid si están presentes
           const archivo = result.archivos?.[0];
@@ -229,6 +246,26 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         } catch (chunkError) {
           console.error(`Error en chunk ${i + 1}:`, chunkError.message);
           
+          // Si es el último chunk y falla, intentar una vez más después de una pausa
+          if (i === chunks.length - 1 && chunkError.message.includes('500')) {
+            console.log('Reintentando último chunk después de pausa...');
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Pausa de 2 segundos
+            
+                         try {
+               const result = await uploadChunk(chunk, file, totalChunks, uploadEndpoint, currentToken, clientId);
+              results.push(result);
+              // Guardar tipo_contenido y uuid si están presentes
+              const archivo = result.archivos?.[0];
+              if (archivo) {
+                tipo_contenido_final = archivo.tipo_contenido;
+                uuid_final = archivo.uuid;
+              }
+              continue;
+            } catch (retryError) {
+              console.error('Error en reintento del último chunk:', retryError.message);
+            }
+          }
+          
           // Si es 401, intentar renovar token una vez
           if (chunkError.message.includes('401') && onTokenRefresh && retryAttemptRef.current < 1) {
             retryAttemptRef.current += 1;
@@ -236,7 +273,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
             try {
               const newToken = await onTokenRefresh();
               if (newToken) {
-                const result = await uploadChunk(chunk, file, uploadId, totalChunks, uploadEndpoint, newToken);
+                const result = await uploadChunk(chunk, file, totalChunks, uploadEndpoint, newToken, clientId);
                 results.push(result);
                 // Guardar tipo_contenido y uuid si están presentes
                 const archivo = result.archivos?.[0];
@@ -255,7 +292,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         }
       }
 
-      // Éxito completo
+      // Éxito completo - el backend debería procesar automáticamente
       setIsUploading(false);
       setUploadCompleted(true);
       setUploadStatus({
@@ -264,6 +301,8 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         details: results[results.length - 1],
       });
 
+
+
       console.log(`Subida completada: ${file.name}`);
       // Log final de tipo_contenido y uuid
       if (tipo_contenido_final || uuid_final) {
@@ -271,9 +310,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
           tipo_contenido_final,
           uuid_final
         });
-      }
-      
-      uploadIdRef.current = null; 
+      } 
 
     } catch (error) {
       console.error('Error en subida chunked:', error.message);
@@ -285,8 +322,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         message: `Error en subida: ${error.message}`,
         details: error,
       });
-      
-      uploadIdRef.current = null;
     }
   };
 
@@ -297,7 +332,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
         setUploadStatus(null);
         setUploadCompleted(false);
         setUploadProgress({ current: 0, total: 0 });
-        uploadIdRef.current = null;
         
         const file = files[0];
         
@@ -334,7 +368,6 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
     setUploadCompleted(false);
     setIsUploading(false);
     setUploadProgress({ current: 0, total: 0 });
-    uploadIdRef.current = null;
     
     // Limpiar el input file
     if (fileInputRef.current) {
@@ -412,7 +445,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
               {/* Información sobre chunked upload */}
               <div className="mt-2">
                 <small className="text-muted">
-                  <i className="bi bi-info-circle"></i> Los archivos se dividen automáticamente en chunks de 2MB para una subida más eficiente y confiable.
+                  <i className="bi bi-info-circle"></i> Los archivos se dividen automáticamente en chunks de 10MB para una subida más eficiente y confiable.
                 </small>
               </div>
             </>
@@ -425,11 +458,13 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
                   ? 'alert-success' 
                   : uploadStatus.type === 'error'
                   ? 'alert-danger'
+                  : uploadStatus.type === 'warning'
+                  ? 'alert-warning'
                   : 'alert-info'
               }`}
               role="alert"
             >
-              {/* {uploadStatus.message} */}
+              {uploadStatus.message}
               {uploadStatus.details && (
                 <details className="mt-2">
                   <summary className="cursor-pointer">Ver detalles de la respuesta</summary>
