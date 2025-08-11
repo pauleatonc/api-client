@@ -2,13 +2,12 @@ import React, { useMemo, useState } from 'react';
 
 function parseFilenameFromContentDisposition(headerValue) {
   if (!headerValue) return null;
-  // Content-Disposition: attachment; filename="example.pdf"; filename*=UTF-8''example.pdf
   try {
     const utfPart = headerValue.split("filename*=UTF-8''")[1];
     if (utfPart) return decodeURIComponent(utfPart.trim().replace(/"/g, ''));
     const match = /filename\*=([^;]+)|filename=\"([^\"]+)\"|filename=([^;]+)/i.exec(headerValue);
     if (match) {
-      return decodeURIComponent((match[1] || match[2] || match[3] || '').trim().replace(/"/g, ''));
+      return decodeURIComponent((match[1] || match[2] || match[3] || '').trim().replace(/\"/g, ''));
     }
   } catch (_) {}
   return null;
@@ -19,6 +18,9 @@ const FileSearch = ({ token, keycloak }) => {
   const [results, setResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
+  const [downloadingUuid, setDownloadingUuid] = useState(null);
+  const [downloadPercent, setDownloadPercent] = useState(0);
+  const [downloadFilename, setDownloadFilename] = useState('');
 
   const baseUrl = useMemo(() => {
     const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
@@ -55,22 +57,60 @@ const FileSearch = ({ token, keycloak }) => {
     }
   };
 
-  const handleDownload = async (uuid) => {
+  const handleDownload = async (uuid, suggestedName) => {
     if (!uuid || !currentToken) return;
+    const url = `${baseUrl}/obtenerfile/${uuid}`;
+    const authHeaders = { Authorization: `Bearer ${currentToken}` };
+
+    setError('');
+    setDownloadingUuid(uuid);
+    setDownloadPercent(0);
+    setDownloadFilename(suggestedName || uuid);
+
     try {
-      const url = `${baseUrl}/obtenerfile/${uuid}`;
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${currentToken}` },
-      });
+      const res = await fetch(url, { method: 'GET', headers: authHeaders });
       if (!res.ok) {
         const txt = await res.text();
         throw new Error(`${res.status} ${res.statusText}: ${txt}`);
       }
-      const blob = await res.blob();
-      const cd = res.headers.get('Content-Disposition');
-      const filename = parseFilenameFromContentDisposition(cd) || `${uuid}`;
 
+      const total = Number(res.headers.get('Content-Length') || '0');
+      const contentType = res.headers.get('Content-Type') || 'application/octet-stream';
+      const cd = res.headers.get('Content-Disposition');
+      const filename = parseFilenameFromContentDisposition(cd) || suggestedName || uuid;
+      setDownloadFilename(filename);
+
+      const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+      if (!reader) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(blobUrl);
+        setDownloadPercent(100);
+        setDownloadingUuid(null);
+        return;
+      }
+
+      const parts = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength) {
+          parts.push(value);
+          received += value.byteLength;
+          if (total > 0) {
+            setDownloadPercent(Math.floor((received / total) * 100));
+          }
+        }
+      }
+
+      const blob = new Blob(parts, { type: contentType });
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
@@ -79,8 +119,11 @@ const FileSearch = ({ token, keycloak }) => {
       a.click();
       a.remove();
       URL.revokeObjectURL(blobUrl);
+      setDownloadPercent(100);
     } catch (err) {
       setError(err.message || 'Error descargando archivo');
+    } finally {
+      setDownloadingUuid(null);
     }
   };
 
@@ -125,8 +168,12 @@ const FileSearch = ({ token, keycloak }) => {
                     Backup: {item.backup_status}{item.backup_timestamp ? ` (${new Date(item.backup_timestamp).toLocaleString()})` : ''}
                   </div>
                 </div>
-                <div>
-                  <button className="btn btn-outline-secondary" onClick={() => handleDownload(item.uuid)}>
+                <div className="text-end">
+                  <button
+                    className="btn btn-outline-secondary"
+                    onClick={() => handleDownload(item.uuid, item.nombre)}
+                    disabled={!!downloadingUuid}
+                  >
                     Descargar
                   </button>
                 </div>
@@ -138,6 +185,32 @@ const FileSearch = ({ token, keycloak }) => {
 
       {!isSearching && results.length === 0 && !error && (
         <div className="text-muted small mt-3">No hay resultados</div>
+      )}
+
+      {downloadingUuid && (
+        <div className="modal fade show" style={{ display: 'block', background: 'rgba(0,0,0,0.5)' }} tabIndex={-1}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Descargando</h5>
+              </div>
+              <div className="modal-body">
+                <div className="mb-2"><strong>Archivo:</strong> {downloadFilename}</div>
+                <div className="progress" style={{ height: 12 }}>
+                  <div className="progress-bar" role="progressbar" style={{ width: `${downloadPercent}%` }} aria-valuenow={downloadPercent} aria-valuemin="0" aria-valuemax="100" />
+                </div>
+                <div className="small text-muted mt-2">
+                  {downloadPercent}%
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" disabled>
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
