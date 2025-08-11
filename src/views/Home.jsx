@@ -9,6 +9,7 @@ import FileSearch from '../components/Api-files/FileSearch'
 
 function Home() {
   const [activeView, setActiveView] = useState(null)
+  const [activeTab, setActiveTab] = useState('upload') // 'upload' | 'search'
   const { 
     keycloak, 
     authenticated, 
@@ -24,11 +25,8 @@ function Home() {
     setActiveView('userInfo')
   }, [])
 
-  // Añadir función para el botón de API
   const handleApiCallClick = useCallback(() => {
-    // Por ahora, solo cambiar la vista activa
     setActiveView('pesticides')
-    // Aquí podrías agregar la lógica para llamar a la API
     console.log('Llamada a API - Función no implementada aún')
   }, [])
 
@@ -56,21 +54,49 @@ function Home() {
                     <UserInfoCard userInfo={userInfo} />
                   )}
                 </div>                
-                {/* Solo mostrar FileUploader cuando el usuario esté autenticado */}
+                {/* Solo mostrar módulos cuando el usuario esté autenticado */}
                 {authenticated && (
                   <div className="col-12 mt-4">
-                    <div className="card p-4">
+                    <div className="card p-4" style={{ width: '800px'}}>
                       <h2 className="card-title mb-4 text-center">Gestor de archivos</h2>
-                                             <FileUploader 
-                         token={keycloak?.token} 
-                         onTokenRefresh={refreshToken}
-                         keycloak={keycloak}
-                       />
 
-                       <div className="mt-4">
-                         <h3 className="mb-3">Buscar y descargar archivos</h3>
-                         <FileSearch token={keycloak?.token} keycloak={keycloak} />
-                       </div>
+                      {/* Tabs */}
+                      <ul className="nav nav-tabs mb-3">
+                        <li className="nav-item">
+                          <button
+                            className={`nav-link ${activeTab === 'upload' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('upload')}
+                            type="button"
+                          >
+                            Subir archivos
+                          </button>
+                        </li>
+                        <li className="nav-item">
+                          <button
+                            className={`nav-link ${activeTab === 'search' ? 'active' : ''}`}
+                            onClick={() => setActiveTab('search')}
+                            type="button"
+                          >
+                            Buscar archivos
+                          </button>
+                        </li>
+                      </ul>
+
+                      {/* Tab content */}
+                      <div>
+                        {activeTab === 'upload' && (
+                          <FileUploader 
+                            token={keycloak?.token} 
+                            onTokenRefresh={refreshToken}
+                            keycloak={keycloak}
+                          />
+                        )}
+                        {activeTab === 'search' && (
+                          <div className="mt-3">
+                            <FileSearch token={keycloak?.token} keycloak={keycloak} />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}

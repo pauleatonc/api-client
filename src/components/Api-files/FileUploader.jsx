@@ -52,7 +52,7 @@ async function uploadChunk(chunk, file, totalChunks, endpoint, token, clientId) 
     formData.append('original_filename', file.name);
   } else {
     // Modo dinámico (concurrencia por navegador + usuario)
-    formData.append('files', chunkBlob, file.name);
+  formData.append('files', chunkBlob, file.name);
     formData.append('client_id', clientId);
     formData.append('part_number', (chunk.index + 1).toString());
     formData.append('total_parts', totalChunks.toString());
@@ -65,7 +65,7 @@ async function uploadChunk(chunk, file, totalChunks, endpoint, token, clientId) 
       formData.append('completo', 'false');
     }
   }
-
+  
   console.log(`Subiendo chunk ${chunk.index + 1}/${totalChunks} - ${(chunk.size / (1024*1024)).toFixed(2)}MB`);
   console.log(`Client ID: ${clientId}`);
   console.log('Detalles del chunk:', {
@@ -311,7 +311,7 @@ const FileUploader = ({ token, onTokenRefresh, keycloak }) => {
           tipo_contenido_final,
           uuid_final
         });
-      } 
+      }
 
     } catch (error) {
       console.error('Error en subida chunked:', error.message);
