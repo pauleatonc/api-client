@@ -5,6 +5,7 @@ import Footer from '../components/Layout/Footer'
 import UserInfoCard from '../components/UserInfo/UserInfoCard'
 import AuthButtons from '../components/Auth/AuthButtons'
 import FileUploader from '../components/Api-files/FileUploader'
+import FileSearch from '../components/Api-files/FileSearch'
 
 function Home() {
   const [activeView, setActiveView] = useState(null)
@@ -60,11 +61,16 @@ function Home() {
                   <div className="col-12 mt-4">
                     <div className="card p-4">
                       <h2 className="card-title mb-4 text-center">Gestor de archivos</h2>
-                      <FileUploader 
-                        token={keycloak?.token} 
-                        onTokenRefresh={refreshToken}
-                        keycloak={keycloak}
-                      />
+                                             <FileUploader 
+                         token={keycloak?.token} 
+                         onTokenRefresh={refreshToken}
+                         keycloak={keycloak}
+                       />
+
+                       <div className="mt-4">
+                         <h3 className="mb-3">Buscar y descargar archivos</h3>
+                         <FileSearch token={keycloak?.token} keycloak={keycloak} />
+                       </div>
                     </div>
                   </div>
                 )}
