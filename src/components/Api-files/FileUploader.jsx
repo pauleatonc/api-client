@@ -4,6 +4,8 @@ import '@uppy/core/dist/style.min.css';
 // Configuración para chunked upload manual
 const USE_MANUAL_CHUNKED = true; // Usar implementación manual en lugar de Uppy
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks (coincide con el script bash)
+// Modo estricto: replica exactamente el bash (client_id=uploadclient y solo 5 campos)
+const STRICT_BASH_MODE = true;
 
 
 
@@ -41,28 +43,27 @@ async function uploadChunk(chunk, file, totalChunks, endpoint, token, clientId) 
   // Datos del chunk como blob binario con nombre original
   const chunkBlob = new Blob([chunk.data], { type: file.type });
   
-  // Parámetros según especificaciones
-  formData.append('files', chunkBlob, file.name);
-  formData.append('client_id', clientId); // único por navegador + usuario
-  formData.append('part_number', (chunk.index + 1).toString());
-  formData.append('total_parts', totalChunks.toString());
+  if (STRICT_BASH_MODE) {
+    // EXACTO como el bash: solo estos 5 campos
+    formData.append('files', chunkBlob, file.name);
+    formData.append('client_id', 'uploadclient');
+    formData.append('part_number', (chunk.index + 1).toString());
+    formData.append('total_parts', totalChunks.toString());
     formData.append('original_filename', file.name);
-  
-  // El usuario se extrae automáticamente del token JWT de Keycloak en el backend
-  // Solo enviamos client_id para manejo de concurrencia
-  
-  // Parámetro crucial para que el backend detecte el último chunk
-  if (chunk.index + 1 === totalChunks) {
-    formData.append('completo', 'true');
-    // Intentar también otros nombres que el backend podría estar esperando
-    formData.append('is_last_chunk', 'true');
-    formData.append('final_chunk', 'true');
-    formData.append('last_part', 'true');
   } else {
-    formData.append('completo', 'false');
-    formData.append('is_last_chunk', 'false');
-    formData.append('final_chunk', 'false');
-    formData.append('last_part', 'false');
+    // Modo dinámico (concurrencia por navegador + usuario)
+    formData.append('files', chunkBlob, file.name);
+    formData.append('client_id', clientId);
+    formData.append('part_number', (chunk.index + 1).toString());
+    formData.append('total_parts', totalChunks.toString());
+    formData.append('original_filename', file.name);
+    
+    // Señal de último chunk (si backend la usa)
+    if (chunk.index + 1 === totalChunks) {
+      formData.append('completo', 'true');
+    } else {
+      formData.append('completo', 'false');
+    }
   }
 
   console.log(`Subiendo chunk ${chunk.index + 1}/${totalChunks} - ${(chunk.size / (1024*1024)).toFixed(2)}MB`);

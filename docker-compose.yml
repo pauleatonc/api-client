@@ -14,4 +14,6 @@ services:
       - frontend_net
 
 networks:
-  frontend_net: {}
+  frontend_net:
+    external: true
+    name: frontend_frontend_net
